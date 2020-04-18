@@ -469,6 +469,7 @@ cfg_if::cfg_if! {
         any(
             target_os = "linux",
             target_os = "macos",
+            target_vendor = "libnx",
             windows,
         ),
     ))] {

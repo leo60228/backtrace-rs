@@ -15,14 +15,37 @@ use core::mem;
 use core::u32;
 use findshlibs::{self, Segment, SharedLibrary};
 use libc::c_void;
-use memmap::Mmap;
 use std::env;
 use std::ffi::OsString;
-use std::fs::File;
 use std::path::Path;
 use std::prelude::v1::*;
 
 const MAPPINGS_CACHE_SIZE: usize = 4;
+
+#[cfg(not(target_vendor = "libnx"))]
+mod file {
+    use memmap::Mmap;
+    pub type File = Mmap;
+
+    pub fn load_file(path: &Path) -> Option<File> {
+        use std::fs::File;
+
+        let file = File::open(path).ok()?;
+        // TODO: not completely safe, see https://github.com/danburkert/memmap-rs/issues/25
+        unsafe { Mmap::map(&file).ok() }
+    }
+}
+
+#[cfg(target_vendor = "libnx")]
+mod file {
+    pub type File = std::vec::Vec<u8>;
+
+    pub fn load_file(path: &std::path::Path) -> Option<File> {
+        std::fs::read(path).ok()
+    }
+}
+
+use file::*;
 
 struct Context<'a> {
     dwarf: addr2line::Context<EndianSlice<'a, Endian>>,
@@ -32,7 +55,7 @@ struct Context<'a> {
 struct Mapping {
     // 'static lifetime is a lie to hack around lack of support for self-referential structs.
     cx: Context<'static>,
-    _map: Mmap,
+    _map: File,
 }
 
 fn cx<'data>(object: Object<'data>) -> Option<Context<'data>> {
@@ -60,7 +83,7 @@ fn cx<'data>(object: Object<'data>) -> Option<Context<'data>> {
     Some(Context { dwarf, object })
 }
 
-fn assert_lifetimes<'a>(_: &'a Mmap, _: &Context<'a>) {}
+fn assert_lifetimes<'a>(_: &'a File, _: &Context<'a>) {}
 
 macro_rules! mk {
     (Mapping { $map:expr, $inner:expr }) => {{
@@ -72,12 +95,6 @@ macro_rules! mk {
             _map: $map,
         }
     }};
-}
-
-fn mmap(path: &Path) -> Option<Mmap> {
-    let file = File::open(path).ok()?;
-    // TODO: not completely safe, see https://github.com/danburkert/memmap-rs/issues/25
-    unsafe { Mmap::map(&file).ok() }
 }
 
 cfg_if::cfg_if! {
@@ -298,7 +315,7 @@ cfg_if::cfg_if! {
 impl Mapping {
     #[cfg(not(target_os = "macos"))]
     fn new(path: &Path) -> Option<Mapping> {
-        let map = mmap(path)?;
+        let map = load_file(path)?;
         let cx = cx(Object::parse(&map)?)?;
         Some(mk!(Mapping { map, cx }))
     }
@@ -310,7 +327,7 @@ impl Mapping {
     fn new(path: &Path) -> Option<Mapping> {
         // First up we need to load the unique UUID which is stored in the macho
         // header of the file we're reading, specified at `path`.
-        let map = mmap(path)?;
+        let map = load_file(path)?;
         let macho = MachO::parse(&map, 0).ok()?;
         let uuid = find_uuid(&macho)?;
 
@@ -345,7 +362,7 @@ impl Mapping {
         fn load_dsym(dir: &Path, uuid: &[u8; 16]) -> Option<Mapping> {
             for entry in dir.read_dir().ok()? {
                 let entry = entry.ok()?;
-                let map = mmap(&entry.path())?;
+                let map = load_file(&entry.path())?;
                 let macho = MachO::parse(&map, 0).ok()?;
                 let entry_uuid = find_uuid(&macho)?;
                 if entry_uuid != uuid {
@@ -461,6 +478,13 @@ impl Cache {
         if cfg!(windows) {
             let addr = findshlibs::Svma(addr);
             return Some((usize::max_value(), addr));
+        } else if cfg!(target_vendor = "libnx") {
+            extern "C" {
+                static __start__: u8;
+            }
+            let base = unsafe { &__start__ } as *const u8 as isize;
+            let svma = findshlibs::Svma(unsafe { addr.offset(-base) });
+            return Some((usize::max_value(), svma));
         }
 
         self.libraries
@@ -512,7 +536,11 @@ impl Cache {
             let path = match self.libraries.get(lib) {
                 Some(lib) => &lib.name,
                 None => {
-                    storage = env::current_exe().ok()?.into();
+                    if cfg!(target_vendor = "libnx") {
+                        storage = "romfs:/debug_info.elf".into();
+                    } else {
+                        storage = env::current_exe().ok()?.into();
+                    }
                     &storage
                 }
             };
