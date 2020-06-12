@@ -14,7 +14,7 @@
 #![allow(dead_code)]
 
 cfg_if::cfg_if! {
-    if #[cfg(all(unix, not(target_os = "emscripten"), feature = "dladdr"))] {
+    if #[cfg(all(unix, not(target_os = "emscripten"), not(target_os = "horizon"), feature = "dladdr"))] {
         use core::ffi::c_void;
         use core::marker;
         use core::{mem, slice};
