@@ -491,10 +491,12 @@ cfg_if::cfg_if! {
                         any(unix, all(windows, not(target_vendor = "uwp"), target_env = "gnu")),
                         not(target_os = "fuchsia"),
                         not(target_os = "emscripten"),
+                        not(target_os = "horizon"),
                         not(target_env = "uclibc")))] {
         mod libbacktrace;
         use self::libbacktrace::resolve as resolve_imp;
         use self::libbacktrace::Symbol as SymbolImp;
+        #[allow(unused)]
         unsafe fn clear_symbol_cache_imp() {}
     } else if #[cfg(all(unix,
                         not(target_os = "emscripten"),
